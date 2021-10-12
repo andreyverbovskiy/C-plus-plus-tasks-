@@ -15,9 +15,7 @@
 #include "board.h"
 #endif
 #endif
-
 #include <cr_section_macros.h>
-
 #include <atomic>
 #define TICKRATE_HZ1 (1000)	/* 15 ticks per second */
 
