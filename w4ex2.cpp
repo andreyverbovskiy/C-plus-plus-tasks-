@@ -35,7 +35,6 @@ static I2CM_XFER_T i2cmXferRec;
 #include <stdio.h>
 #include <cr_section_macros.h>
 
-
 static volatile int counter;
 
 #ifdef __cplusplus
