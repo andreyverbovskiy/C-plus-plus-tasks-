@@ -35,11 +35,7 @@
 /*****************************************************************************
  * Public types/enumerations/variables
  ****************************************************************************/
-
-
 SemaphoreHandle_t semaph;
-
-
 /*****************************************************************************
  * Private functions
  ****************************************************************************/
@@ -47,58 +43,36 @@ SemaphoreHandle_t semaph;
 /* Sets up system hardware */
 static void prvSetupHardware(void)
 {
-	SystemCoreClockUpdate();
-	Board_Init();
+    SystemCoreClockUpdate();
+    Board_Init();
 
-	/* Initial LED0 state is off */
-	Board_LED_Set(0, false);
+    /* Initial LED0 state is off */
+    Board_LED_Set(0, false);
 }
 
-static void vSW1Task(void *pvParameters) {
+static void vTask1(void *pvParameters) {
+    int x;
+    while (1) {
+        x = Board_UARTGetChar();
 
-	DigitalIoPin sw1(0, 17, DigitalIoPin::pullup);
-
-	while (1) {
-		if(!sw1.read()) {
-
-			xSemaphoreTake(semaph, portMAX_DELAY);
-			DEBUGOUT("SW1 Pressed\r\n");
-			xSemaphoreGive(semaph);
-
-		}
-	vTaskDelay(configTICK_RATE_HZ);
-	}
+        if (x != EOF) {
+            Board_UARTPutChar(x);
+            xSemaphoreGive(semaph);
+        }
+    }
 }
 
-static void vSW2Task(void *pvParameters) {
+static void vTask2(void *pvParameters) {
+    while (1) {
+        if (xSemaphoreTake(semaph, portMAX_DELAY) == pdTRUE) {
 
-	DigitalIoPin sw2(1, 11, DigitalIoPin::pullup);
+            Board_LED_Set(0, true);
+            vTaskDelay(configTICK_RATE_HZ / 10);
+            Board_LED_Set(0, false);
+            vTaskDelay(configTICK_RATE_HZ / 10);
 
-	while (1) {
-		if(!sw2.read()) {
-
-			xSemaphoreTake(semaph, portMAX_DELAY);
-			DEBUGOUT("SW2 Pressed\r\n");
-			xSemaphoreGive(semaph);
-		}
-		vTaskDelay(configTICK_RATE_HZ);
-	}
-}
-
-static void vSW3Task(void *pvParameters) {
-
-	DigitalIoPin sw3(1, 9, DigitalIoPin::pullup);
-
-	while (1) {
-		if(!sw3.read()) {
-
-			xSemaphoreTake(semaph, portMAX_DELAY);
-			DEBUGOUT("SW3 Pressed\r\n");
-			xSemaphoreGive(semaph);
-
-		}
-		vTaskDelay(configTICK_RATE_HZ);
-	}
+        }
+    }
 }
 
 /*****************************************************************************
@@ -109,44 +83,38 @@ static void vSW3Task(void *pvParameters) {
 extern "C" {
 
 void vConfigureTimerForRunTimeStats( void ) {
-	Chip_SCT_Init(LPC_SCTSMALL1);
-	LPC_SCTSMALL1->CONFIG = SCT_CONFIG_32BIT_COUNTER;
-	LPC_SCTSMALL1->CTRL_U = SCT_CTRL_PRE_L(255) | SCT_CTRL_CLRCTR_L; // set prescaler to 256 (255 + 1), and start timer
+    Chip_SCT_Init(LPC_SCTSMALL1);
+    LPC_SCTSMALL1->CONFIG = SCT_CONFIG_32BIT_COUNTER;
+    LPC_SCTSMALL1->CTRL_U = SCT_CTRL_PRE_L(255) | SCT_CTRL_CLRCTR_L; // set prescaler to 256 (255 + 1), and start timer
 }
 
 }
 /* end runtime statistics collection */
 
 /**
- * @brief	main routine for FreeRTOS blinky example
- * @return	Nothing, function should not exit
+ * @brief    main routine for FreeRTOS blinky example
+ * @return    Nothing, function should not exit
  */
 int main(void)
 {
+    //NOTE: configTICK_RATE_HZ = 1000
+    prvSetupHardware();
 
+    heap_monitor_setup();
 
-	prvSetupHardware();
+    semaph = xSemaphoreCreateBinary();
 
-	heap_monitor_setup();
+    xTaskCreate(vTask1, "vTask1_ex",
+            configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
+            (TaskHandle_t *) NULL);
 
-	semaph = xSemaphoreCreateMutex();
+    xTaskCreate(vTask2, "vTask2_ex",
+            configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
+            (TaskHandle_t *) NULL);
 
-	xTaskCreate(vSW1Task, "vTaskSW1",
-			configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
-			(TaskHandle_t *) NULL);
+    /* Start the scheduler */
+    vTaskStartScheduler();
 
-	xTaskCreate(vSW2Task, "vTaskSW2",
-			configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
-			(TaskHandle_t *) NULL);
-
-	xTaskCreate(vSW3Task, "vTaskSW3",
-			configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
-			(TaskHandle_t *) NULL);
-
-	/* Start the scheduler */
-	vTaskStartScheduler();
-
-	/* Should never arrive here */
-	return 1;
+    /* Should never arrive here */
+    return 1;
 }
-
