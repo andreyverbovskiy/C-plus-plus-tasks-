@@ -24,9 +24,14 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
+#include "semphr.h"
 #include "heap_lock_monitor.h"
-#include "DigitalIoPin.h"
 
+#include "DigitalIoPin.h"
+#include <string>
+
+#define QUEUE_SIZE (5)
 /*****************************************************************************
  * Private types/enumerations/variables
  ****************************************************************************/
@@ -34,10 +39,20 @@
 /*****************************************************************************
  * Public types/enumerations/variables
  ****************************************************************************/
-
+QueueHandle_t xQueue;
+SemaphoreHandle_t semaph;
+const TickType_t xTicksToWait = pdMS_TO_TICKS(100);
 /*****************************************************************************
  * Private functions
  ****************************************************************************/
+
+/* Print to UART with guard. Stands for Semaphore Print*/
+void sem_print(const char *str){
+	xSemaphoreTake(semaph,portMAX_DELAY);
+	Board_UARTPutSTR(str);
+	xSemaphoreGive(semaph);
+}
+
 
 /* Sets up system hardware */
 static void prvSetupHardware(void)
@@ -45,32 +60,71 @@ static void prvSetupHardware(void)
 	SystemCoreClockUpdate();
 	Board_Init();
 
-	/* Initial LED0 state is off */
 	Board_LED_Set(0, false);
 }
 
-/* LED1 toggle thread */
+static void vTask1(void *pvParameters) {
+	int i, counter = 0;
 
-/* LED2 toggle thread */
-
-
-/* UART (or output) thread */
-static void vUARTTask(void *pvParameters) {
-	DigitalIoPin sw1(0, 17, DigitalIoPin::input);
-	int tickCnt = 0;
 	while (1) {
-		if(!sw1.read()) {
-			vTaskDelay(configTICK_RATE_HZ/10);
-		}
+		xSemaphoreTake(semaph,portMAX_DELAY);
+		i = Board_UARTGetChar();
+		xSemaphoreGive(semaph);
 
-		else {
-			vTaskDelay(configTICK_RATE_HZ);
-		}
+		if (i != EOF) {
+			xSemaphoreTake(semaph,portMAX_DELAY);
+			Board_UARTPutChar(i);
+			xSemaphoreGive(semaph);
 
-		DEBUGOUT("Ticks: %0d\r\n", tickCnt);
-		tickCnt++;
+			if (i == '\n' || i == '\r') {
+				if(xQueueSendToBack(xQueue, &counter, xTicksToWait) != pdPASS ) {
+					sem_print( "Something is wrong. Could not send to the queue.\r\n" );
+				}
+				counter = 0;
+			}
+			else {
+				counter++;
+			}
+		}
 	}
 }
+
+static void vTask2(void *pvParameters) {
+	DigitalIoPin sw1(0, 17, DigitalIoPin::pull_up, true);
+	const int end = -1;
+
+	while (1) {
+		if (sw1.read()) {
+			if( xQueueSendToBack( xQueue, &end, xTicksToWait) != pdPASS ) {
+				sem_print("Something is wrong. Could not send to the queue.\r\n" );
+			}
+			vTaskDelay(1000);
+		}
+	}
+}
+
+static void vTask3(void *pvParameters) {
+	int lReceivedValue, sum = 0;
+	char arr[50];
+
+	while(1) {
+		if(xQueueReceive(xQueue, &lReceivedValue, xTicksToWait) == pdPASS) {
+			if(lReceivedValue != -1) {
+				sum += lReceivedValue;
+			}
+			else {
+
+				sprintf(arr, "In total there were %d characters \r\n",sum);
+				sem_print(arr);
+				arr[0] = '\0';
+
+				sum = 0;
+				lReceivedValue = 0;
+			}
+		}
+	}
+}
+
 
 /*****************************************************************************
  * Public functions
@@ -92,16 +146,29 @@ void vConfigureTimerForRunTimeStats( void ) {
  * @brief	main routine for FreeRTOS blinky example
  * @return	Nothing, function should not exit
  */
+
+
 int main(void)
 {
 	//NOTE: configTICK_RATE_HZ = 1000
+
+	xQueue = xQueueCreate(QUEUE_SIZE, sizeof(int));
+	semaph = xSemaphoreCreateMutex();
+
 	prvSetupHardware();
 
 	heap_monitor_setup();
 
-	/* UART output thread, simply counts seconds */
-	xTaskCreate(vUARTTask, "vTaskUart",
-			configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 2UL),
+	xTaskCreate(vTask1, "Task1",
+			configMINIMAL_STACK_SIZE  + 128, NULL, (tskIDLE_PRIORITY + 1UL),
+			(TaskHandle_t *) NULL);
+
+	xTaskCreate(vTask2, "Task2",
+			configMINIMAL_STACK_SIZE, NULL, (tskIDLE_PRIORITY + 1UL),
+			(TaskHandle_t *) NULL);
+
+	xTaskCreate(vTask3, "Task3",
+			configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
 			(TaskHandle_t *) NULL);
 
 	/* Start the scheduler */
@@ -110,4 +177,5 @@ int main(void)
 	/* Should never arrive here */
 	return 1;
 }
+
 
