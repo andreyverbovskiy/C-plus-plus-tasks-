@@ -122,6 +122,7 @@ void vConfigureTimerForRunTimeStats( void ) {
 }
 
 }
+
 int main(void)
 {
     prvSetupHardware();
