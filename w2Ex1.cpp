@@ -27,6 +27,7 @@
 #include "semphr.h"
 #include "heap_lock_monitor.h"
 #include "DigitalIoPin.h"
+#include "timers.h"
 
 /*****************************************************************************
  * Private types/enumerations/variables
@@ -35,44 +36,61 @@
 /*****************************************************************************
  * Public types/enumerations/variables
  ****************************************************************************/
-SemaphoreHandle_t semaph;
+#define QUEUE_SIZE (5)
+
+SemaphoreHandle_t semaph, semaph2;
+QueueHandle_t queue;
+TimerHandle_t xTimer1, xTimer2;
 /*****************************************************************************
  * Private functions
  ****************************************************************************/
 
-/* Sets up system hardware */
+/* Print to UART with guard. Stands for Semaphore Print*/
+void sem_print(const char *str){
+	xSemaphoreTake(semaph2, portMAX_DELAY);
+	Board_UARTPutSTR(str);
+	xSemaphoreGive(semaph2);
+}
+
 static void prvSetupHardware(void)
 {
-    SystemCoreClockUpdate();
-    Board_Init();
-
-    /* Initial LED0 state is off */
-    Board_LED_Set(0, false);
+	SystemCoreClockUpdate();
+	Board_Init();
 }
 
 static void vTask1(void *pvParameters) {
-    int x;
-    while (1) {
-        x = Board_UARTGetChar();
+	char command[10];
+	while (1) {
+		if(xQueueReceive(queue, command, portMAX_DELAY) == pdPASS) {
+			sem_print(command);
+		}
+	}
+}
 
-        if (x != EOF) {
-            Board_UARTPutChar(x);
-            xSemaphoreGive(semaph);
-        }
-    }
+void vTimer1(TimerHandle_t xTimer) {
+	xSemaphoreGive(semaph);
 }
 
 static void vTask2(void *pvParameters) {
-    while (1) {
-        if (xSemaphoreTake(semaph, portMAX_DELAY) == pdTRUE) {
+	const char *command = "Aargh\r\n";
 
-            Board_LED_Set(0, true);
-            vTaskDelay(configTICK_RATE_HZ / 10);
-            Board_LED_Set(0, false);
-            vTaskDelay(configTICK_RATE_HZ / 10);
+	while (1) {
+		if (xSemaphoreTake(semaph, portMAX_DELAY) == pdTRUE) {
+			if(xQueueSendToBack(queue, command, portMAX_DELAY) != pdPASS ) {
+				sem_print("Error, command cannot be sent.\r\n");
+			}
+		}
+	}
+}
 
-        }
-    }
+
+
+void vTimer2(TimerHandle_t xTimer) {
+	const char *command = "Hello!\r\n";
+
+	if(xQueueSend(queue, command, portMAX_DELAY) != pdPASS ) {
+		sem_print("Unable to send a command.\r\n");
+	}
 }
 
 /*****************************************************************************
@@ -83,38 +101,48 @@ static void vTask2(void *pvParameters) {
 extern "C" {
 
 void vConfigureTimerForRunTimeStats( void ) {
-    Chip_SCT_Init(LPC_SCTSMALL1);
-    LPC_SCTSMALL1->CONFIG = SCT_CONFIG_32BIT_COUNTER;
-    LPC_SCTSMALL1->CTRL_U = SCT_CTRL_PRE_L(255) | SCT_CTRL_CLRCTR_L; // set prescaler to 256 (255 + 1), and start timer
+	Chip_SCT_Init(LPC_SCTSMALL1);
+	LPC_SCTSMALL1->CONFIG = SCT_CONFIG_32BIT_COUNTER;
+	LPC_SCTSMALL1->CTRL_U = SCT_CTRL_PRE_L(255) | SCT_CTRL_CLRCTR_L; // set prescaler to 256 (255 + 1), and start timer
 }
 
 }
 /* end runtime statistics collection */
 
 /**
- * @brief    main routine for FreeRTOS blinky example
- * @return    Nothing, function should not exit
+ * @brief	main routine for FreeRTOS blinky example
+ * @return	Nothing, function should not exit
  */
+
 int main(void)
 {
-    //NOTE: configTICK_RATE_HZ = 1000
-    prvSetupHardware();
+	prvSetupHardware();
 
-    heap_monitor_setup();
+	heap_monitor_setup();
 
-    semaph = xSemaphoreCreateBinary();
+	queue = xQueueCreate(QUEUE_SIZE, sizeof(char[10]));
 
-    xTaskCreate(vTask1, "vTask1_ex",
-            configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
-            (TaskHandle_t *) NULL);
+	semaph = xSemaphoreCreateBinary();
+	semaph2 = xSemaphoreCreateMutex();
 
-    xTaskCreate(vTask2, "vTask2_ex",
-            configMINIMAL_STACK_SIZE + 128, NULL, (tskIDLE_PRIORITY + 1UL),
-            (TaskHandle_t *) NULL);
+	xTimer1 = xTimerCreate("Oneshot",  pdMS_TO_TICKS(20000), pdFALSE, (void *) 0, vTimer1);
+	xTimer2 = xTimerCreate("Reload",  pdMS_TO_TICKS(5000), pdTRUE, (void *) 1, vTimer2);
 
-    /* Start the scheduler */
-    vTaskStartScheduler();
+	xTimerStart(xTimer1, 0);
+	xTimerStart(xTimer2, 0);
 
-    /* Should never arrive here */
-    return 1;
+	xTaskCreate(vTask1, "Task1",
+			256, NULL, (tskIDLE_PRIORITY + 1UL),
+			(TaskHandle_t *) NULL);
+
+	xTaskCreate(vTask2, "Task2",
+			256, NULL, (tskIDLE_PRIORITY + 1UL),
+			(TaskHandle_t *) NULL);
+
+
+	/* Start the scheduler */
+	vTaskStartScheduler();
+
+	/* Should never arrive here */
+	return 1;
 }
